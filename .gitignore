@@ -23,6 +23,7 @@
 *.symtypes
 *.order
 modules.builtin
+compile.log
 *.elf
 *.bin
 *.gz
@@ -32,6 +33,24 @@ modules.builtin
 *.lzo
 *.patch
 *.gcno
+*.lz4
+*.tar
+*.zip
+*.log
+*.rej
+*.orig
+*zImage
+*zImage-dtb
+*boot.img
+*ramdisk.img
+*Image
+dt.img
+output
+boot.img
+*/zImage*
+*/zImage
+*/*.img
+*/*.zip
 
 #
 # Top-level generic files

@@ -53,6 +53,7 @@ int atomic_xchg(atomic_t *v, int new)
 }
 EXPORT_SYMBOL(atomic_xchg);
 
+>>>>>>> ae68c82... Linux 3.10.61
 int atomic_cmpxchg(atomic_t *v, int old, int new)
 {
 	int ret;

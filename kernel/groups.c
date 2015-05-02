@@ -6,7 +6,6 @@
 #include <linux/slab.h>
 #include <linux/security.h>
 #include <linux/syscalls.h>
-#include <linux/user_namespace.h>
 #include <asm/uaccess.h>
 
 /* init to 2 - one for init_task, one to ensure it is never freed */
@@ -155,6 +154,18 @@ int groups_search(const struct group_info *group_info, kgid_t grp)
 }
 
 /**
+ * set_groups_sorted - Change a group subscription in a set of credentials
+ *  <at> new: The newly prepared set of credentials to alter
+ *  <at> group_info: The group list to install; must be sorted
+ */
+static void set_groups_sorted(struct cred *new, struct group_info *group_info)
+{
+	put_group_info(new->group_info);
+	get_group_info(group_info);
+	new->group_info = group_info;
+}
+
+/**
  * set_groups - Change a group subscription in a set of credentials
  * @new: The newly prepared set of credentials to alter
  * @group_info: The group list to install
@@ -164,10 +175,8 @@ int groups_search(const struct group_info *group_info, kgid_t grp)
  */
 int set_groups(struct cred *new, struct group_info *group_info)
 {
-	put_group_info(new->group_info);
 	groups_sort(group_info);
-	get_group_info(group_info);
-	new->group_info = group_info;
+	set_groups_sorted(new, group_info);
 	return 0;
 }
 
@@ -224,14 +233,6 @@ out:
 	return i;
 }
 
-bool may_setgroups(void)
-{
-	struct user_namespace *user_ns = current_user_ns();
-
-	return ns_capable(user_ns, CAP_SETGID) &&
-		userns_may_setgroups(user_ns);
-}
-
 /*
  *	SMP: Our groups are copy-on-write. We can set them safely
  *	without another task interfering.
@@ -242,7 +243,7 @@ SYSCALL_DEFINE2(setgroups, int, gidsetsize, gid_t __user *, grouplist)
 	struct group_info *group_info;
 	int retval;
 
-	if (!may_setgroups())
+	if (!nsown_capable(CAP_SETGID))
 		return -EPERM;
 	if ((unsigned)gidsetsize > NGROUPS_MAX)
 		return -EINVAL;

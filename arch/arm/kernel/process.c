@@ -14,6 +14,7 @@
 #include <linux/sched.h>
 #include <linux/kernel.h>
 #include <linux/mm.h>
+#include <linux/vmalloc.h>
 #include <linux/stddef.h>
 #include <linux/unistd.h>
 #include <linux/user.h>
@@ -40,6 +41,7 @@
 #include <asm/thread_notify.h>
 #include <asm/stacktrace.h>
 #include <asm/mach/time.h>
+#include <asm/tls.h>
 
 #ifdef CONFIG_CC_STACKPROTECTOR
 #include <linux/stackprotector.h>
@@ -167,7 +169,8 @@ EXPORT_SYMBOL_GPL(arm_pm_restart);
  * This is our default idle handler.
  */
 
-void (*arm_pm_idle)(void);
+extern void arch_idle(void);
+void (*arm_pm_idle)(void) = arch_idle;
 
 static void default_idle(void)
 {
@@ -255,6 +258,7 @@ void machine_shutdown(void)
  */
 void machine_halt(void)
 {
+	preempt_disable();
 	smp_send_stop();
 
 	local_irq_disable();
@@ -269,6 +273,7 @@ void machine_halt(void)
  */
 void machine_power_off(void)
 {
+	preempt_disable();
 	smp_send_stop();
 
 	if (pm_power_off)
@@ -288,6 +293,7 @@ void machine_power_off(void)
  */
 void machine_restart(char *cmd)
 {
+	preempt_disable();
 	smp_send_stop();
 
 	/* Flush the console to make sure all the relevant messages make it
@@ -340,7 +346,12 @@ static void show_data(unsigned long addr, int nbytes, const char *name)
 		printk("%04lx ", (unsigned long)p & 0xffff);
 		for (j = 0; j < 8; j++) {
 			u32	data;
-			if (probe_kernel_address(p, data)) {
+			/*
+			 * vmalloc addresses may point to
+			 * memory-mapped peripherals
+			 */
+			if (is_vmalloc_addr(p) ||
+			    probe_kernel_address(p, data)) {
 				printk(" ********");
 			} else {
 				printk(" %08x", data);
@@ -354,25 +365,44 @@ static void show_data(unsigned long addr, int nbytes, const char *name)
 static void show_extra_register_data(struct pt_regs *regs, int nbytes)
 {
 	mm_segment_t fs;
+	unsigned long is_user;
 
 	fs = get_fs();
+	is_user = user_mode(regs);
+
 	set_fs(KERNEL_DS);
-	show_data(regs->ARM_pc - nbytes, nbytes * 2, "PC");
-	show_data(regs->ARM_lr - nbytes, nbytes * 2, "LR");
-	show_data(regs->ARM_sp - nbytes, nbytes * 2, "SP");
-	show_data(regs->ARM_ip - nbytes, nbytes * 2, "IP");
-	show_data(regs->ARM_fp - nbytes, nbytes * 2, "FP");
-	show_data(regs->ARM_r0 - nbytes, nbytes * 2, "R0");
-	show_data(regs->ARM_r1 - nbytes, nbytes * 2, "R1");
-	show_data(regs->ARM_r2 - nbytes, nbytes * 2, "R2");
-	show_data(regs->ARM_r3 - nbytes, nbytes * 2, "R3");
-	show_data(regs->ARM_r4 - nbytes, nbytes * 2, "R4");
-	show_data(regs->ARM_r5 - nbytes, nbytes * 2, "R5");
-	show_data(regs->ARM_r6 - nbytes, nbytes * 2, "R6");
-	show_data(regs->ARM_r7 - nbytes, nbytes * 2, "R7");
-	show_data(regs->ARM_r8 - nbytes, nbytes * 2, "R8");
-	show_data(regs->ARM_r9 - nbytes, nbytes * 2, "R9");
-	show_data(regs->ARM_r10 - nbytes, nbytes * 2, "R10");
+	if (!is_user || regs->ARM_pc < TASK_SIZE)
+		show_data(regs->ARM_pc - nbytes, nbytes * 2, "PC");
+	if (!is_user || regs->ARM_lr < TASK_SIZE)
+		show_data(regs->ARM_lr - nbytes, nbytes * 2, "LR");
+	if (!is_user || regs->ARM_sp < TASK_SIZE)
+		show_data(regs->ARM_sp - nbytes, nbytes * 2, "SP");
+	if (!is_user || regs->ARM_ip < TASK_SIZE)
+		show_data(regs->ARM_ip - nbytes, nbytes * 2, "IP");
+	if (!is_user || regs->ARM_fp < TASK_SIZE)
+		show_data(regs->ARM_fp - nbytes, nbytes * 2, "FP");
+	if (!is_user || regs->ARM_r0 < TASK_SIZE)
+		show_data(regs->ARM_r0 - nbytes, nbytes * 2, "R0");
+	if (!is_user || regs->ARM_r1 < TASK_SIZE)
+		show_data(regs->ARM_r1 - nbytes, nbytes * 2, "R1");
+	if (!is_user || regs->ARM_r2 < TASK_SIZE)
+		show_data(regs->ARM_r2 - nbytes, nbytes * 2, "R2");
+	if (!is_user || regs->ARM_r3 < TASK_SIZE)
+		show_data(regs->ARM_r3 - nbytes, nbytes * 2, "R3");
+	if (!is_user || regs->ARM_r4 < TASK_SIZE)
+		show_data(regs->ARM_r4 - nbytes, nbytes * 2, "R4");
+	if (!is_user || regs->ARM_r5 < TASK_SIZE)
+		show_data(regs->ARM_r5 - nbytes, nbytes * 2, "R5");
+	if (!is_user || regs->ARM_r6 < TASK_SIZE)
+		show_data(regs->ARM_r6 - nbytes, nbytes * 2, "R6");
+	if (!is_user || regs->ARM_r7 < TASK_SIZE)
+		show_data(regs->ARM_r7 - nbytes, nbytes * 2, "R7");
+	if (!is_user || regs->ARM_r8 < TASK_SIZE)
+		show_data(regs->ARM_r8 - nbytes, nbytes * 2, "R8");
+	if (!is_user || regs->ARM_r9 < TASK_SIZE)
+		show_data(regs->ARM_r9 - nbytes, nbytes * 2, "R9");
+	if (!is_user || regs->ARM_r10 < TASK_SIZE)
+		show_data(regs->ARM_r10 - nbytes, nbytes * 2, "R10");
 	set_fs(fs);
 }
 
@@ -501,7 +531,8 @@ copy_thread(unsigned long clone_flags, unsigned long stack_start,
 	clear_ptrace_hw_breakpoint(p);
 
 	if (clone_flags & CLONE_SETTLS)
-		thread->tp_value = childregs->ARM_r3;
+		thread->tp_value[0] = childregs->ARM_r3;
+	thread->tp_value[1] = get_tpuser();
 
 	thread_notify(THREAD_NOTIFY_COPY, thread);
 
@@ -603,9 +634,14 @@ int in_gate_area_no_mm(unsigned long addr)
 
 const char *arch_vma_name(struct vm_area_struct *vma)
 {
-	return is_gate_vma(vma) ? "[vectors]" :
-		(vma->vm_mm && vma->vm_start == vma->vm_mm->context.sigpage) ?
-		 "[sigpage]" : NULL;
+	if (is_gate_vma(vma))
+		return "[vectors]";
+	else if (vma->vm_mm && vma->vm_start == vma->vm_mm->context.sigpage)
+		return "[sigpage]";
+	else if (vma == get_user_timers_vma(NULL))
+		return "[timers]";
+	else
+		return NULL;
 }
 
 static struct page *signal_page;

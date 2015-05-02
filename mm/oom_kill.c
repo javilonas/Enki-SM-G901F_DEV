@@ -100,16 +100,16 @@ static bool has_intersects_mems_allowed(struct task_struct *tsk,
  */
 struct task_struct *find_lock_task_mm(struct task_struct *p)
 {
-	struct task_struct *t;
+	struct task_struct *t = p;
 
 	rcu_read_lock();
 
-	for_each_thread(p, t) {
+	do {
 		task_lock(t);
 		if (likely(t->mm))
 			goto found;
 		task_unlock(t);
-	}
+	} while_each_thread(p, t);
 	t = NULL;
 found:
 	rcu_read_unlock();
@@ -258,8 +258,13 @@ enum oom_scan_t oom_scan_process_thread(struct task_struct *task,
 		unsigned long totalpages, const nodemask_t *nodemask,
 		bool force_kill)
 {
-	if (task->exit_state)
+	if (task->exit_state) {
+#ifdef CONFIG_OOM_SCAN_WA_PREVENT_WRONG_SEARCH
+		if (task->pid == task->tgid)
+			return OOM_SCAN_SKIP_SEARCH_THREAD;
+#endif
 		return OOM_SCAN_CONTINUE;
+	}
 	if (oom_unkillable_task(task, NULL, nodemask))
 		return OOM_SCAN_CONTINUE;
 
@@ -308,10 +313,16 @@ static struct task_struct *select_bad_process(unsigned int *ppoints,
 	struct task_struct *chosen = NULL;
 	unsigned long chosen_points = 0;
 
-	rcu_read_lock();
-	for_each_process_thread(g, p) {
-		unsigned int points;
+#ifdef CONFIG_OOM_SCAN_WA_PREVENT_WRONG_SEARCH
+	bool skip_search_thread = false;
+#endif
 
+	rcu_read_lock();
+	do_each_thread(g, p) {
+		unsigned int points;
+#ifdef CONFIG_OOM_SCAN_WA_PREVENT_WRONG_SEARCH
+		skip_search_thread = false;
+#endif
 		switch (oom_scan_process_thread(p, totalpages, nodemask,
 						force_kill)) {
 		case OOM_SCAN_SELECT:
@@ -323,17 +334,39 @@ static struct task_struct *select_bad_process(unsigned int *ppoints,
 		case OOM_SCAN_ABORT:
 			rcu_read_unlock();
 			return ERR_PTR(-1UL);
+#ifdef CONFIG_OOM_SCAN_WA_PREVENT_WRONG_SEARCH
+		case OOM_SCAN_SKIP_SEARCH_THREAD:
+			skip_search_thread = true;
+			/* fall through */
+#endif
 		case OOM_SCAN_OK:
 			break;
 		};
+
+#ifdef CONFIG_OOM_SCAN_WA_PREVENT_WRONG_SEARCH
+		if(skip_search_thread)
+			break;
+#endif
+
 		points = oom_badness(p, NULL, nodemask, totalpages);
 		if (points > chosen_points) {
 			chosen = p;
 			chosen_points = points;
 		}
-	}
+	} while_each_thread(g, p);
+	
 	if (chosen)
+	{
+#ifdef CONFIG_OOM_SCAN_SKIP_SEARCH_THREAD
+		if(chosen->pid != chosen->tgid ) {
+			pr_warning("%s is selected: pid=%d, tgid=%d, "
+				"oom_score_adj=%hd\n",
+				chosen->comm, chosen->pid, chosen->tgid,
+				chosen->signal->oom_score_adj);
+		}
+#endif
 		get_task_struct(chosen);
+	}
 	rcu_read_unlock();
 
 	*ppoints = chosen_points * 1000 / totalpages;
@@ -351,7 +384,7 @@ static struct task_struct *select_bad_process(unsigned int *ppoints,
  * State information includes task's pid, uid, tgid, vm size, rss, nr_ptes,
  * swapents, oom_score_adj value, and name.
  */
-static void dump_tasks(const struct mem_cgroup *memcg, const nodemask_t *nodemask)
+void dump_tasks(const struct mem_cgroup *memcg, const nodemask_t *nodemask)
 {
 	struct task_struct *p;
 	struct task_struct *task;
@@ -431,7 +464,7 @@ void oom_kill_process(struct task_struct *p, gfp_t gfp_mask, int order,
 {
 	struct task_struct *victim = p;
 	struct task_struct *child;
-	struct task_struct *t;
+	struct task_struct *t = p;
 	struct mm_struct *mm;
 	unsigned int victim_points = 0;
 	static DEFINE_RATELIMIT_STATE(oom_rs, DEFAULT_RATELIMIT_INTERVAL,
@@ -462,7 +495,7 @@ void oom_kill_process(struct task_struct *p, gfp_t gfp_mask, int order,
 	 * still freeing memory.
 	 */
 	read_lock(&tasklist_lock);
-	for_each_thread(p, t) {
+	do {
 		list_for_each_entry(child, &t->children, sibling) {
 			unsigned int child_points;
 
@@ -480,7 +513,7 @@ void oom_kill_process(struct task_struct *p, gfp_t gfp_mask, int order,
 				get_task_struct(victim);
 			}
 		}
-	}
+	} while_each_thread(p, t);
 	read_unlock(&tasklist_lock);
 
 	p = find_lock_task_mm(victim);
@@ -702,12 +735,9 @@ out:
  */
 void pagefault_out_of_memory(void)
 {
-	struct zonelist *zonelist;
+	struct zonelist *zonelist = node_zonelist(first_online_node,
+						  GFP_KERNEL);
 
-	if (mem_cgroup_oom_synchronize(true))
-		return;
-
-	zonelist = node_zonelist(first_online_node, GFP_KERNEL);
 	if (try_set_zonelist_oom(zonelist, GFP_KERNEL)) {
 		out_of_memory(NULL, 0, 0, NULL, false);
 		clear_zonelist_oom(zonelist, GFP_KERNEL);

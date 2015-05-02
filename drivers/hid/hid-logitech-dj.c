@@ -723,6 +723,13 @@ static int logi_dj_raw_event(struct hid_device *hdev,
 		return false;
 	}
 
+	if ((dj_report->device_index < DJ_DEVICE_INDEX_MIN) ||
+	    (dj_report->device_index > DJ_DEVICE_INDEX_MAX)) {
+		dev_err(&hdev->dev, "%s: invalid device index:%d\n",
+				__func__, dj_report->device_index);
+		return false;
+	}
+
 	spin_lock_irqsave(&djrcv_dev->lock, flags);
 	switch (dj_report->report_type) {
 	case REPORT_TYPE_NOTIF_DEVICE_PAIRED:

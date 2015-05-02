@@ -1109,8 +1109,14 @@ conf/all/forwarding - BOOLEAN
 
 	This referred to as global forwarding.
 
-proxy_ndp - BOOLEAN
+proxy_ndp - INTEGER
 	Do proxy ndp.
+
+	Possible values are:
+		0 Proxy NDP is disabled
+		1 Proxy NDP is enabled
+		2 NDP packets are sent to userspace, where a userspace proxy
+                  can be implemented
 
 fwmark_reflect - BOOLEAN
 	Controls the fwmark of kernel-generated IPv6 reply packets that are not
@@ -1170,6 +1176,11 @@ accept_ra_rtr_pref - BOOLEAN
 
 	Functional default: enabled if accept_ra is enabled.
 			    disabled if accept_ra is disabled.
+
+accept_ra_prefix_route - BOOLEAN
+	Set the prefix route for the autoconfigured interface address
+
+	Functional default: enabled
 
 accept_redirects - BOOLEAN
 	Accept Redirects.
@@ -1338,19 +1349,6 @@ ndisc_notify - BOOLEAN
 	0 - (default): do nothing
 	1 - Generate unsolicited neighbour advertisements when device is brought
 	    up or hardware address changes.
-
-optimistic_dad - BOOLEAN
-	Whether to perform Optimistic Duplicate Address Detection (RFC 4429).
-		0: disabled (default)
-		1: enabled
-
-use_optimistic - BOOLEAN
-	If enabled, do not classify optimistic addresses as deprecated during
-	source address selection.  Preferred addresses will still be chosen
-	before optimistic addresses, subject to other ranking in the source
-	address selection algorithm.
-		0: disabled (default)
-		1: enabled
 
 icmp/*:
 ratelimit - INTEGER

@@ -18,35 +18,23 @@
 
 #include <linux/module.h>
 #include <linux/device-mapper.h>
-#include <linux/reboot.h>
+#include <linux/random.h>
 #include <crypto/hash.h>
 
 #define DM_MSG_PREFIX			"verity"
-
-#define DM_VERITY_ENV_LENGTH		42
-#define DM_VERITY_ENV_VAR_NAME		"VERITY_ERR_BLOCK_NR"
 
 #define DM_VERITY_IO_VEC_INLINE		16
 #define DM_VERITY_MEMPOOL_SIZE		4
 #define DM_VERITY_DEFAULT_PREFETCH_SIZE	262144
 
 #define DM_VERITY_MAX_LEVELS		63
-#define DM_VERITY_MAX_CORRUPTED_ERRS	100
+
+#define	FLAT_HASH_VERIFICATION		0
+#define	PROBABILISTIC_VERIFICATION 	1
 
 static unsigned dm_verity_prefetch_cluster = DM_VERITY_DEFAULT_PREFETCH_SIZE;
 
 module_param_named(prefetch_cluster, dm_verity_prefetch_cluster, uint, S_IRUGO | S_IWUSR);
-
-enum verity_mode {
-	DM_VERITY_MODE_EIO = 0,
-	DM_VERITY_MODE_LOGGING = 1,
-	DM_VERITY_MODE_RESTART = 2
-};
-
-enum verity_block_type {
-	DM_VERITY_BLOCK_TYPE_DATA,
-	DM_VERITY_BLOCK_TYPE_METADATA
-};
 
 struct dm_verity {
 	struct dm_dev *data_dev;
@@ -70,8 +58,6 @@ struct dm_verity {
 	unsigned digest_size;	/* digest size for the current hash algorithm */
 	unsigned shash_descsize;/* the size of temporary space for crypto */
 	int hash_failed;	/* set to 1 if hash of any block failed */
-	enum verity_mode mode;	/* mode for handling verification errors */
-	unsigned corrupted_errs;/* Number of errors for corrupted blocks */
 
 	mempool_t *vec_mempool;	/* mempool of bio vector */
 
@@ -198,54 +184,6 @@ static void verity_hash_at_level(struct dm_verity *v, sector_t block, int level,
 }
 
 /*
- * Handle verification errors.
- */
-static int verity_handle_err(struct dm_verity *v, enum verity_block_type type,
-				 unsigned long long block)
-{
-	char verity_env[DM_VERITY_ENV_LENGTH];
-	char *envp[] = { verity_env, NULL };
-	const char *type_str = "";
-	struct mapped_device *md = dm_table_get_md(v->ti->table);
-
-	if (v->corrupted_errs >= DM_VERITY_MAX_CORRUPTED_ERRS)
-		goto out;
-
-	++v->corrupted_errs;
-
-	switch (type) {
-	case DM_VERITY_BLOCK_TYPE_DATA:
-		type_str = "data";
-		break;
-	case DM_VERITY_BLOCK_TYPE_METADATA:
-		type_str = "metadata";
-		break;
-	default:
-		BUG();
-	}
-
-	DMERR_LIMIT("%s: %s block %llu is corrupted", v->data_dev->name,
-                type_str, block);
-
-	if (v->corrupted_errs == DM_VERITY_MAX_CORRUPTED_ERRS)
-		DMERR("%s: reached maximum errors", v->data_dev->name);
-
-	snprintf(verity_env, DM_VERITY_ENV_LENGTH, "%s=%d,%llu",
-		DM_VERITY_ENV_VAR_NAME, type, block);
-
-	kobject_uevent_env(&disk_to_dev(dm_disk(md))->kobj, KOBJ_CHANGE, envp);
-
-out:
-	if (v->mode == DM_VERITY_MODE_LOGGING)
-		return 0;
-
-	if (v->mode == DM_VERITY_MODE_RESTART)
-		kernel_restart("dm-verity device corrupted");
-
-	return 1;
-}
-
-/*
  * Verify hash of a metadata block pertaining to the specified data block
  * ("block" argument) at a specified level ("level" argument).
  *
@@ -261,9 +199,11 @@ static int verity_verify_level(struct dm_verity_io *io, sector_t block,
 {
 	struct dm_verity *v = io->v;
 	struct dm_buffer *buf;
+#if	!FLAT_HASH_VERIFICATION
 	struct buffer_aux *aux;
-	u8 *data;
 	int r;
+#endif
+	u8 *data;
 	sector_t hash_block;
 	unsigned offset;
 
@@ -273,6 +213,8 @@ static int verity_verify_level(struct dm_verity_io *io, sector_t block,
 	if (unlikely(IS_ERR(data)))
 		return PTR_ERR(data);
 
+/* Implicitly trust the obtained hash meta-data for flat verification */
+#if	!FLAT_HASH_VERIFICATION
 	aux = dm_bufio_get_aux_data(buf);
 
 	if (!aux->hash_verified) {
@@ -322,16 +264,15 @@ static int verity_verify_level(struct dm_verity_io *io, sector_t block,
 			goto release_ret_r;
 		}
 		if (unlikely(memcmp(result, io_want_digest(v, io), v->digest_size))) {
+			DMERR_LIMIT("metadata block %llu is corrupted",
+				(unsigned long long)hash_block);
 			v->hash_failed = 1;
-
-			if (verity_handle_err(v, DM_VERITY_BLOCK_TYPE_METADATA,
-					      hash_block)) {
-				r = -EIO;
-				goto release_ret_r;
-			}
+			r = -EIO;
+			goto release_ret_r;
 		} else
 			aux->hash_verified = 1;
 	}
+#endif
 
 	data += offset;
 
@@ -340,10 +281,12 @@ static int verity_verify_level(struct dm_verity_io *io, sector_t block,
 	dm_bufio_release(buf);
 	return 0;
 
+#if	!FLAT_HASH_VERIFICATION
 release_ret_r:
 	dm_bufio_release(buf);
 
 	return r;
+#endif
 }
 
 /*
@@ -353,7 +296,9 @@ static int verity_verify_io(struct dm_verity_io *io)
 {
 	struct dm_verity *v = io->v;
 	unsigned b;
+#if	!FLAT_HASH_VERIFICATION
 	int i;
+#endif
 	unsigned vector = 0, offset = 0;
 
 	for (b = 0; b < io->n_blocks; b++) {
@@ -376,6 +321,8 @@ static int verity_verify_io(struct dm_verity_io *io)
 			if (r < 0)
 				return r;
 		}
+#if	!FLAT_HASH_VERIFICATION
+/* flat model does not need meta-data verification */
 
 		memcpy(io_want_digest(v, io), v->root_digest, v->digest_size);
 
@@ -384,7 +331,7 @@ static int verity_verify_io(struct dm_verity_io *io)
 			if (unlikely(r))
 				return r;
 		}
-
+#endif
 test_block_hash:
 		desc = io_hash_desc(v, io);
 		desc->tfm = v->tfm;
@@ -445,11 +392,12 @@ test_block_hash:
 			return r;
 		}
 		if (unlikely(memcmp(result, io_want_digest(v, io), v->digest_size))) {
-			v->hash_failed = 1;
-
-			if (verity_handle_err(v, DM_VERITY_BLOCK_TYPE_DATA,
-					      io->block + b))
+			DMERR_LIMIT("data block %llu is corrupted",
+				(unsigned long long)(io->block + b));
+			if (io->block != 0) {
+				v->hash_failed = 1;
 				return -EIO;
+			}
 		}
 	}
 	BUG_ON(vector != io->io_vec_size);
@@ -507,7 +455,14 @@ static void verity_prefetch_io(struct work_struct *work)
 	struct dm_verity *v = pw->v;
 	int i;
 
+#if	!FLAT_HASH_VERIFICATION
 	for (i = v->levels - 2; i >= 0; i--) {
+#else
+	/* changed from v->levels  - 2. Default dmverity assumes atleast 2 levels. data + roothash. 
+	 * Flat model has exactly one level - leaves. So this change supposedly prefetches only leaf nodes
+	 */
+	for (i = 0; i >= 0; i--) {
+#endif
 		sector_t hash_block_start;
 		sector_t hash_block_end;
 		verity_hash_at_level(v, pw->block, i, &hash_block_start, NULL);
@@ -560,7 +515,12 @@ static int verity_map(struct dm_target *ti, struct bio *bio)
 {
 	struct dm_verity *v = ti->private;
 	struct dm_verity_io *io;
-
+#if PROBABILISTIC_VERIFICATION == 1
+#define PROBABILITY	10 /* Only edit this. Make sure it divides 100 nicely */
+#define	NR_ONE_OUT_OF	(100/PROBABILITY)
+	static unsigned int dm_verity_ctr = 0;
+	static unsigned int dm_verity_measure = 0;
+#endif
 	bio->bi_bdev = v->data_dev->bdev;
 	bio->bi_sector = verity_map_sector(v, bio->bi_sector);
 
@@ -578,6 +538,21 @@ static int verity_map(struct dm_target *ti, struct bio *bio)
 
 	if (bio_data_dir(bio) == WRITE)
 		return -EIO;
+
+#if PROBABILISTIC_VERIFICATION == 1
+	if (dm_verity_ctr != dm_verity_measure) {
+		dm_verity_ctr++;
+		goto skip_verity_check;
+	}
+
+	dm_verity_ctr++;
+	/* Intentionally not protected by locks. It does not matter */
+	if (dm_verity_ctr > NR_ONE_OUT_OF) {
+		dm_verity_ctr = 0;
+		dm_verity_measure = get_random_int() % NR_ONE_OUT_OF;
+	}
+
+#endif
 
 	io = dm_per_bio_data(bio, ti->per_bio_data_size);
 	io->v = v;
@@ -597,7 +572,9 @@ static int verity_map(struct dm_target *ti, struct bio *bio)
 	       io->io_vec_size * sizeof(struct bio_vec));
 
 	verity_submit_prefetch(v, io);
-
+#if PROBABILISTIC_VERIFICATION == 1
+skip_verity_check:
+#endif
 	generic_make_request(bio);
 
 	return DM_MAPIO_SUBMITTED;
@@ -758,8 +735,8 @@ static int verity_ctr(struct dm_target *ti, unsigned argc, char **argv)
 		goto bad;
 	}
 
-	if (argc < 10 || argc > 11) {
-		ti->error = "Invalid argument count: 10-11 arguments required";
+	if (argc != 10) {
+		ti->error = "Invalid argument count: exactly 10 arguments required";
 		r = -EINVAL;
 		goto bad;
 	}
@@ -878,17 +855,6 @@ static int verity_ctr(struct dm_target *ti, unsigned argc, char **argv)
 			r = -EINVAL;
 			goto bad;
 		}
-	}
-
-	if (argc > 10) {
-		if (sscanf(argv[10], "%d%c", &num, &dummy) != 1 ||
-			num < DM_VERITY_MODE_EIO ||
-			num > DM_VERITY_MODE_RESTART) {
-			ti->error = "Invalid mode";
-			r = -EINVAL;
-			goto bad;
-		}
-		v->mode = num;
 	}
 
 	v->hash_per_block_bits =

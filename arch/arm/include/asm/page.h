@@ -13,7 +13,7 @@
 /* PAGE_SHIFT determines the page size */
 #define PAGE_SHIFT		12
 #define PAGE_SIZE		(_AC(1,UL) << PAGE_SHIFT)
-#define PAGE_MASK		(~((1 << PAGE_SHIFT) - 1))
+#define PAGE_MASK		(~(PAGE_SIZE-1))
 
 #ifndef __ASSEMBLY__
 
@@ -158,6 +158,11 @@ typedef struct page *pgtable_t;
 
 #ifdef CONFIG_HAVE_ARCH_PFN_VALID
 extern int pfn_valid(unsigned long);
+#endif
+
+#ifdef CONFIG_MEMORY_HOTPLUG_SPARSE
+extern int _early_pfn_valid(unsigned long);
+#define early_pfn_valid(pfn) (_early_pfn_valid(pfn))
 #endif
 
 #include <asm/memory.h>

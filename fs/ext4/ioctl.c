@@ -14,6 +14,7 @@
 #include <linux/compat.h>
 #include <linux/mount.h>
 #include <linux/file.h>
+#include <linux/blkdev.h>
 #include <asm/uaccess.h>
 #include "ext4_jbd2.h"
 #include "ext4.h"
@@ -605,13 +606,11 @@ resizefs_out:
 		return err;
 	}
 
-	case FIDTRIM:
-	case FITRIM:
+	case FSECTRIM:
 	{
 		struct request_queue *q = bdev_get_queue(sb->s_bdev);
 		struct fstrim_range range;
 		int ret = 0;
-		int flags  = cmd == FIDTRIM ? BLKDEV_DISCARD_SECURE : 0;
 
 		if (!capable(CAP_SYS_ADMIN))
 			return -EPERM;
@@ -619,15 +618,46 @@ resizefs_out:
 		if (!blk_queue_discard(q))
 			return -EOPNOTSUPP;
 
-		if ((flags & BLKDEV_DISCARD_SECURE) && !blk_queue_secdiscard(q))
+		if (EXT4_HAS_RO_COMPAT_FEATURE(sb,
+				   EXT4_FEATURE_RO_COMPAT_BIGALLOC)) {
+			ext4_msg(sb, KERN_ERR,
+				 "FSECTRIM not supported with bigalloc");
 			return -EOPNOTSUPP;
+		}
+
+		if (copy_from_user(&range, (struct fstrim_range __user *)arg,
+			sizeof(range)))
+			return -EFAULT;
+
+		range.minlen = max((unsigned int)range.minlen,
+				   q->limits.discard_granularity);
+
+		ret =  blkdev_issue_discard(sb->s_bdev, range.start, range.len, GFP_NOFS, 1);
+		if (ret < 0)
+			return ret;
+
+		return 0;
+	}
+
+	case FITRIM:
+	{
+		struct request_queue *q = bdev_get_queue(sb->s_bdev);
+		struct fstrim_range range;
+		int ret = 0;
+
+		if (!capable(CAP_SYS_ADMIN))
+			return -EPERM;
+
+		if (!blk_queue_discard(q))
+			return -EOPNOTSUPP;
+
 		if (copy_from_user(&range, (struct fstrim_range __user *)arg,
 		    sizeof(range)))
 			return -EFAULT;
 
 		range.minlen = max((unsigned int)range.minlen,
 				   q->limits.discard_granularity);
-		ret = ext4_trim_fs(sb, &range, flags);
+		ret = ext4_trim_fs(sb, &range);
 		if (ret < 0)
 			return ret;
 

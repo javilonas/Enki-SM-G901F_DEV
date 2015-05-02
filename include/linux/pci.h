@@ -286,7 +286,9 @@ struct pci_dev {
 	unsigned int	d3_delay;	/* D3->D0 transition time in ms */
 	unsigned int	d3cold_delay;	/* D3cold->D0 transition time in ms */
 
-#ifdef CONFIG_PCIEASPM
+#if defined(CONFIG_PCIEASPM) || (defined(CONFIG_BCMDHD_PCIE) && \
+	(defined(CONFIG_BCM4358) || defined(CONFIG_BCM4358_MODULE) || \
+	defined(CONFIG_BCM4354) || defined(CONFIG_BCM4354_MODULE)))
 	struct pcie_link_state	*link_state;	/* ASPM link state. */
 #endif
 
@@ -310,7 +312,6 @@ struct pci_dev {
 	unsigned int	is_added:1;
 	unsigned int	is_busmaster:1; /* device is busmaster */
 	unsigned int	no_msi:1;	/* device may not use msi */
-	unsigned int	no_64bit_msi:1; /* device may only use 32-bit MSIs */
 	unsigned int	block_cfg_access:1;	/* config space access is blocked */
 	unsigned int	broken_parity_status:1;	/* Device generates false positive parity */
 	unsigned int	irq_reroute_variant:2;	/* device needs IRQ rerouting variant */
